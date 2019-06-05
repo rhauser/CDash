@@ -8,7 +8,7 @@
  <div id="headertop">
   <div id="topmenu">
     <a><xsl:attribute name="href"><xsl:value-of select="/cdash/backurl"/></xsl:attribute>My CDash</a>
-    <a href="index.php">All Dashboards</a>
+    <a href="viewProjects.php">All Dashboards</a>
   </div>
 
   <div id="datetime">
@@ -35,7 +35,7 @@
           <xsl:attribute name="src">displayImage.php?imgid=<xsl:value-of select="cdash/dashboard/logoid"/></xsl:attribute>
          </xsl:when>
         <xsl:otherwise>
-         <xsl:attribute name="src">img/cdash.png</xsl:attribute>
+         <xsl:attribute name="src">img/cdash.png?rev=2019-05-08</xsl:attribute>
         </xsl:otherwise>
         </xsl:choose>
         </img>

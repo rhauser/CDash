@@ -15,6 +15,8 @@
 =========================================================================*/
 namespace CDash\Model;
 
+use CDash\Config;
+
 require_once 'include/repository.php';
 
 use PDO;
@@ -141,7 +143,7 @@ class BuildError
      *
      * Requires the $data of a build error, the $project, and the buildupdate.revision.
      **/
-    public static function marshal($data, $project, $revision, $builderror)
+    public static function marshal($data, Project $project, $revision, $builderror)
     {
         deepEncodeHTMLEntities($data);
 
@@ -150,15 +152,15 @@ class BuildError
         $marshaled = array(
             'new' => (isset($data['newstatus'])) ? $data['newstatus'] : -1,
             'logline' => $data['logline'],
-            'cvsurl' => get_diff_url($project['id'], $project['cvsurl'], $directory, $file, $revision)
+            'cvsurl' => get_diff_url($project->Id, $project->CvsUrl, $directory, $file, $revision)
         );
 
         // When building without launchers, CTest truncates the source dir to
         // /.../<project-name>/.  Use this pattern to linkify compiler output.
         $source_dir = "/\.\.\./[^/]+";
         $marshaled = array_merge($marshaled, array(
-            'precontext' => linkify_compiler_output($project['cvsurl'], $source_dir, $revision, $data['precontext']),            'text' => linkify_compiler_output($project['cvsurl'], $source_dir, $revision, $data['text']),
-            'postcontext' => linkify_compiler_output($project['cvsurl'], $source_dir, $revision, $data['postcontext']),
+            'precontext' => linkify_compiler_output($project->CvsUrl, $source_dir, $revision, $data['precontext']),            'text' => linkify_compiler_output($project->CvsUrl, $source_dir, $revision, $data['text']),
+            'postcontext' => linkify_compiler_output($project->CvsUrl, $source_dir, $revision, $data['postcontext']),
             'sourcefile' => $data['sourcefile'],
             'sourceline' => $data['sourceline']));
 
@@ -168,5 +170,17 @@ class BuildError
         }
 
         return $marshaled;
+    }
+
+    /**
+     * Returns a self referencing URI for the current BuildError.
+     *
+     * @return string
+     */
+    public function GetUrlForSelf()
+    {
+        $config = Config::getInstance();
+        $url = $config->getBaseUrl();
+        return "{$url}/viewBuildError.php?type={$this->Type}&buildid={$this->BuildId}";
     }
 }

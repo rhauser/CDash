@@ -35,7 +35,7 @@ $project = new Project();
 $project->Id = $build->ProjectId;
 $project->Fill();
 
-$date = get_dashboard_date_from_build_starttime($build->StartTime, $project->NightlyTime);
+$date = $project->GetTestingDay($build->StartTime);
 $response = begin_JSON_response();
 get_dashboard_JSON($project->Name, $date, $response);
 $response['title'] = "$project->Name : Update";
@@ -51,7 +51,7 @@ $next_buildid = $build->GetNextBuildId();
 if ($previous_buildid > 0) {
     $menu_response['previous'] = "viewUpdate.php?buildid=$previous_buildid";
 } else {
-    $menu_response['noprevious'] = '1';
+    $menu_response['previous'] = false;
 }
 
 $menu_response['current'] = "viewUpdate.php?buildid=$current_buildid";
@@ -59,7 +59,7 @@ $menu_response['current'] = "viewUpdate.php?buildid=$current_buildid";
 if ($next_buildid > 0) {
     $menu_response['next'] = "viewUpdate.php?buildid=$next_buildid";
 } else {
-    $menu_response['nonext'] = '1';
+    $menu_response['next'] = false;
 }
 $response['menu'] = $menu_response;
 

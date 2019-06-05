@@ -192,9 +192,14 @@ function time_difference($duration, $compact = false, $suffix = '', $displayms =
     $duration -= $hours * 3600;
     $mins = floor($duration / 60);
     $duration -= $mins * 60;
-    $secs = floor($duration);
-    $duration -= $secs;
-    $msecs = round($duration * 1000);
+    if ($displayms) {
+        $secs = floor($duration);
+        $duration -= $secs;
+        $msecs = round($duration * 1000);
+    } else {
+        $secs = round($duration);
+        $msecs = 0;
+    }
 
     $diff = '';
     if ($compact) {
@@ -486,73 +491,6 @@ function clean_backup_directory()
             cdash_unlink($filename);
         }
     }
-}
-
-/** return the total number of public projects */
-function get_number_public_projects()
-{
-    $db = Database::getInstance();
-
-    $buildquery = $db->query("SELECT count(id) FROM project WHERE public='1'");
-    $buildquery_array = pdo_fetch_array($buildquery);
-    return $buildquery_array[0];
-}
-
-/** return an array of public projects */
-function get_projects($onlyactive = true)
-{
-    $config = Config::getInstance();
-    $db = Database::getInstance();
-
-    $projects = [];
-
-    $projectres = $db->query(
-        "SELECT p.id, p.name, p.description,
-            (SELECT COUNT(1) FROM subproject WHERE projectid=p.id AND
-             endtime='1980-01-01 00:00:00') AS nsubproj
-     FROM project AS p
-     WHERE p.public='1' ORDER BY p.name");
-    while ($project_array = pdo_fetch_array($projectres)) {
-        $project = array();
-        $project['id'] = $project_array['id'];
-        $project['name'] = $project_array['name'];
-        $project['description'] = $project_array['description'];
-        $project['numsubprojects'] = $project_array['nsubproj'];
-        $projectid = $project['id'];
-
-        $project['last_build'] = 'NA';
-        $lastbuildquery = $db->query("SELECT submittime FROM build WHERE projectid='$projectid' ORDER BY submittime DESC LIMIT 1");
-        if (pdo_num_rows($lastbuildquery) > 0) {
-            $lastbuild_array = pdo_fetch_array($lastbuildquery);
-            $project['last_build'] = $lastbuild_array['submittime'];
-        }
-
-        // Display if the project is considered active or not
-        $dayssincelastsubmission = $config->get('CDASH_ACTIVE_PROJECT_DAYS') + 1;
-        if ($project['last_build'] != 'NA') {
-            $dayssincelastsubmission = (time() - strtotime($project['last_build'])) / 86400;
-        }
-        $project['dayssincelastsubmission'] = $dayssincelastsubmission;
-
-        if ($project['last_build'] != 'NA' && $project['dayssincelastsubmission'] <= $config->get('CDASH_ACTIVE_PROJECT_DAYS')) {
-            // Get the number of builds in the past 7 days
-            $submittime_UTCDate = gmdate(FMT_DATETIME, time() - 604800);
-            $buildquery = $db->query("SELECT count(id) FROM build WHERE projectid='$projectid' AND starttime>'" . $submittime_UTCDate . "'");
-            echo pdo_error();
-            $buildquery_array = pdo_fetch_array($buildquery);
-            $project['nbuilds'] = $buildquery_array[0];
-        }
-
-        /* Not showing the upload size for now for performance reasons */
-        //$Project = new Project;
-        //$Project->Id = $project['id'];
-        //$project['uploadsize'] = $Project->GetUploadsTotalSize();
-
-        if (!$onlyactive || $project['dayssincelastsubmission'] <= $config->get('CDASH_ACTIVE_PROJECT_DAYS')) {
-            $projects[] = $project;
-        }
-    }
-    return $projects;
 }
 
 /** Get the build id from stamp, name and buildname */
@@ -1469,24 +1407,6 @@ function get_last_buildid_dynamicanalysis($projectid, $siteid, $buildtype, $buil
         return $nextbuild_array['id'];
     }
     return 0;
-}
-
-/** Get the date from the buildid */
-function get_dashboard_date_from_build_starttime($starttime, $nightlytime)
-{
-    $nightlytime = strtotime($nightlytime) - 1; // in case it's midnight
-    $starttime = strtotime($starttime . ' GMT');
-
-    $date = date(FMT_DATE, $starttime);
-    if (date(FMT_TIME, $starttime) > date(FMT_TIME, $nightlytime)) {
-        $date = date(FMT_DATE, $starttime + 3600 * 24); //next day
-    }
-
-    // If the $nightlytime is in the morning it's actually the day after
-    if (date(FMT_TIME, $nightlytime) < '12:00:00') {
-        $date = date(FMT_DATE, strtotime($date) - 3600 * 24); // previous date
-    }
-    return $date;
 }
 
 function get_dashboard_date_from_project($projectname, $date)

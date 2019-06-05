@@ -26,6 +26,7 @@ use CDash\Database;
 use CDash\Model\Build;
 use CDash\Model\BuildUpdate;
 use CDash\Model\BuildUpdateFile;
+use CDash\Model\PendingSubmissions;
 use CDash\Model\Project;
 
 require_once 'include/log.php';
@@ -51,20 +52,44 @@ class GitHub implements RepositoryInterface
     private $hash;
 
     private $apiClient;
+    private $baseUrl;
+    private $config;
+    private $db;
+    private $foundConfigureErrors;
+    private $foundBuildErrors;
+    private $foundTestFailures;
     private $jwtBuilder;
+    private $numPassed;
+    private $numFailed;
+    private $numPending;
+    private $project;
+
+    private $check;
 
     /**
      * GitHub constructor.
-     * @param $installationId
-     * @param $owner
-     * @param $repo
-     * @param $hash
+     * @param Project $project
      */
-    public function __construct($installationId, $owner, $repo)
+    public function __construct(Project $project)
     {
-        $this->installationId = $installationId;
-        $this->owner = $owner;
-        $this->repo = $repo;
+        $this->project = $project;
+        $this->config = Config::getInstance();
+        $this->baseUrl = $this->config->getBaseUrl();
+        $this->db = Database::getInstance();
+        $this->db->getPdo();
+
+        $this->getRepositoryInformation();
+
+        $installationId = '';
+        $repositories = $this->project->GetRepositories();
+        foreach ($repositories as $repo) {
+            if (strpos($repo['url'], 'github.com') !== false) {
+                $this->installationId = $repo['username'];
+                break;
+            }
+        }
+
+        $this->check = null;
     }
 
     public function setApiClient(\Github\Client $client)
@@ -84,6 +109,7 @@ class GitHub implements RepositoryInterface
         }
 
         $builder = new \Github\HttpClient\Builder(new GuzzleClient());
+        $builder->addHeaderValue('Accept', 'application/vnd.github.antiope-preview+json');
         $apiClient = new \Github\Client($builder, 'machine-man-preview');
         $this->setApiClient($apiClient);
     }
@@ -101,7 +127,7 @@ class GitHub implements RepositoryInterface
             return false;
         }
 
-        $pem = Config::getInstance()->get('CDASH_GITHUB_PRIVATE_KEY');
+        $pem = $this->config->get('CDASH_GITHUB_PRIVATE_KEY');
         if (!file_exists($pem)) {
             if ($required) {
                 throw new \Exception('Could not find GitHub private key');
@@ -109,7 +135,7 @@ class GitHub implements RepositoryInterface
             return false;
         }
 
-        $integrationId = Config::getInstance()->get('CDASH_GITHUB_APP_ID');
+        $integrationId = $this->config->get('CDASH_GITHUB_APP_ID');
 
         $jwt = $this->jwtBuilder
             ->setIssuer($integrationId)
@@ -158,9 +184,270 @@ class GitHub implements RepositoryInterface
     }
 
     /**
+     * Post a check to GitHub for the given commit.
+     *
+     * @see https://developer.github.com/v3/checks/runs/#create-a-check-run
+     */
+    public function createCheck($head_sha)
+    {
+        if (!$this->authenticate()) {
+            return;
+        }
+
+        $build_rows = $this->getBuildRowsForCheck($head_sha);
+        $payload = $this->generateCheckPayloadFromBuildRows($build_rows, $head_sha);
+
+        if (!$this->check) {
+            $this->check = new \Github\Api\Repository\Checks($this->apiClient);
+        }
+        try {
+            $this->check->create($this->owner, $this->repo, $payload);
+        } catch (\Github\Exception\RuntimeException $e) {
+            add_log("RunTimeException while trying to create the check.\n" . $e->getMessage() . "\n" . $e->getTraceAsString() . "\n", 'createCheck', LOG_WARNING);
+        }
+    }
+
+    public function setCheck(Check $check)
+    {
+        $this->check = $check;
+    }
+
+    /**
+     * Query the database for information needed to generate a check
+     * for a commit.
+     */
+    public function getBuildRowsForCheck($head_sha)
+    {
+        $stmt = $this->db->prepare('
+            SELECT b.id, b.name, b.builderrors, b.configureerrors, b.testfailed,
+                   b.done, b.starttime, bp.properties
+            FROM build b
+            JOIN build2update b2u ON b2u.buildid = b.id
+            JOIN buildupdate bu ON bu.id = b2u.updateid
+            LEFT JOIN buildproperties bp ON bp.buildid = b.id
+            WHERE bu.revision = :sha');
+        $this->db->execute($stmt, [':sha' => $head_sha]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        $rows = $this->dedupeAndSortBuildRows($rows);
+        return $rows;
+    }
+
+    /**
+     * Include only one row per build name: the one with the most recent start time.
+     * Also sort the rows by the build name (in alphabetical order).
+     */
+    public function dedupeAndSortBuildRows($rows)
+    {
+        // Gather up all the rows that have non-unique build names.
+        $build_names = [];
+        foreach ($rows as $row) {
+            $build_name = $row['name'];
+            if (!array_key_exists($build_name, $build_names)) {
+                $build_names[$build_name] = [];
+            }
+            $build_names[$build_name][] = $row;
+        }
+        $build_names = array_filter($build_names, function ($k, $v) {
+            return count($k) > 1;
+        }, ARRAY_FILTER_USE_BOTH);
+
+        // Find the ids of all the older builds that should not be included
+        // in our report.
+        $buildids_to_remove = [];
+        foreach ($build_names as $name => $builds) {
+            // Find the newest build with this name.
+            // This is the one we will include in the report.
+            $newest_starttime = -1;
+            $buildid_to_keep = -1;
+            foreach ($builds as $build) {
+                $starttime = strtotime($build['starttime']);
+                if ($starttime > $newest_starttime) {
+                    $newest_starttime = $starttime;
+                    $buildid_to_keep = $build['id'];
+                }
+            }
+            // Record all the old builds that should not be included.
+            foreach ($builds as $build) {
+                if ($build['id'] !== $buildid_to_keep) {
+                    $buildids_to_remove[] = $build['id'];
+                }
+            }
+        }
+
+        // Make a new array of rows that only contains the builds that will be
+        // included in our report.
+        $output_rows = [];
+        foreach ($rows as $row) {
+            if (!in_array($row['id'], $buildids_to_remove)) {
+                $output_rows[] = $row;
+            }
+        }
+
+        // Alphabetize this array by build name.
+        usort($output_rows, function ($a, $b) {
+            return strcmp($a['name'], $b['name']);
+        });
+
+        return $output_rows;
+    }
+
+    /**
+     * Create a payload to make a check from an array of build data.
+     */
+    public function generateCheckPayloadFromBuildRows($build_rows, $head_sha)
+    {
+        // Get information about each build performed for this commit.
+        $this->numPassed = 0;
+        $this->numFailed = 0;
+        $this->numPending = 0;
+        $this->foundConfigureErrors = false;
+        $this->foundBuildErrors = false;
+        $this->foundTestFailures = false;
+        $build_summaries = [];
+        foreach ($build_rows as $row) {
+            $build_summary = $this->getCheckSummaryForBuildRow($row);
+            if (!is_null($build_summary)) {
+                $build_summaries[] = $build_summary;
+            }
+        }
+
+        // Initialize our payload with default values.
+        $summary_url = "$this->baseUrl/index.php?project={$this->project->Name}&filtercount=1&showfilters=1&field1=revision&compare1=61&value1=$head_sha";
+
+        $datetime = new \DateTime();
+        $now = $datetime->format(\DateTime::ATOM);
+        $params = [
+            'name'        => 'CDash',
+            'head_sha'    => $head_sha,
+            'details_url' => $summary_url,
+            'started_at'  => $now,
+            'status'      => 'in_progress'
+        ];
+
+        // Populate payload with build results.
+        $output = [];
+        if ($this->numPending + $this->numFailed + $this->numPassed === 0) {
+            // No builds yet.
+            $output['title'] = 'Awaiting results';
+            $summary = 'CDash has not parsed any results for this check yet.';
+        } else {
+            $text = "Build Name | Status | Details\n";
+            $text .= ":-: | :-: | :-:\n";
+            $text .= implode("\n", $build_summaries);
+            $output['text'] = $text;
+            if ($this->numPending > 0) {
+                // Some builds haven't finished yet.
+                $output['title'] = 'Pending';
+                $summary = 'Some builds have not yet finished submitting their results to CDash.';
+            } else {
+                $params['status'] = 'completed';
+                $params['completed_at'] = $now;
+                if ($this->numFailed > 0) {
+                    $params['conclusion'] = 'failure';
+                    $output['title'] = 'Failure';
+                    // Describe the types of problems that CDash found.
+                    $types_of_errors = [];
+                    if ($this->foundConfigureErrors) {
+                        $types_of_errors[] = 'configure errors';
+                    }
+                    if ($this->foundBuildErrors) {
+                        $types_of_errors[] = 'build errors';
+                    }
+                    if ($this->foundTestFailures) {
+                        $types_of_errors[] = 'failed tests';
+                    }
+                    $summary = 'CDash detected ';
+                    $count = count($types_of_errors);
+                    if ($count === 1) {
+                        $summary .= $types_of_errors[0];
+                    } else {
+                        $summary .= implode(', ', array_slice($types_of_errors, 0, -1));
+                        $summary .= ' and ' . end($types_of_errors) . '.';
+                    }
+                } else {
+                    $params['conclusion'] = 'success';
+                    $output['title'] = 'Success';
+                    $summary = 'All builds completed successfully :shipit:';
+                }
+            }
+        }
+        $output['summary'] = "[$summary]($summary_url)";
+        $params['output'] = $output;
+        return $params;
+    }
+
+    /**
+     * Generate a check summary for a given row of build data.
+     */
+    public function getCheckSummaryForBuildRow($row)
+    {
+        // Check properties to see if this build should be excluded
+        // from the check.
+        $properties = json_decode($row['properties'], true);
+        if (is_array($properties) && array_key_exists('skip checks', $properties)) {
+            return null;
+        }
+
+        $build_name = $row['name'];
+        $build_url = "$this->baseUrl/buildSummary.php?buildid={$row['id']}";
+        $details_url = $build_url;
+        if ($row['configureerrors'] > 0) {
+            // Build with configure errors.
+            $msg = "{$row['configureerrors']} configure error";
+            if ($row['configureerrors'] > 1) {
+                // Pluralize.
+                $msg .= 's';
+            }
+            $details_url = "$this->baseUrl/viewConfigure.php?buildid={$row['id']}";
+            $icon = ':x:';
+            $this->numFailed++;
+            $this->foundConfigureErrors = true;
+        } elseif ($row['builderrors'] > 0) {
+            // Build with build errors.
+            $msg = "{$row['builderrors']} build error";
+            if ($row['builderrors'] > 1) {
+                // Pluralize.
+                $msg .= 's';
+            }
+            $details_url = "$this->baseUrl/viewBuildError.php?buildid={$row['id']}";
+            $icon = ':x:';
+            $this->numFailed++;
+            $this->foundBuildErrors = true;
+        } elseif ($row['testfailed'] > 0) {
+            // Build with test failures.
+            $msg = "{$row['testfailed']} failed test";
+            if ($row['testfailed'] > 1) {
+                // Pluralize.
+                $msg .= 's';
+            }
+            $details_url = "$this->baseUrl/viewTest.php?buildid={$row['id']}";
+            $icon = ':x:';
+            $this->numFailed++;
+            $this->foundTestFailures = true;
+        } else {
+            if ($row['done'] == 1) {
+                // Build completed without problems.
+                $icon = ':white_check_mark:';
+                $msg = 'success';
+                $this->numPassed++;
+            } else {
+                // Build hasn't finished reporting yet.
+                $icon = ':hourglass_flowing_sand:';
+                $msg = 'pending';
+                $this->numPending++;
+                // Schedule this check to re-run when the build
+                // is finished.
+                PendingSubmissions::RecheckForBuildId($row['id']);
+            }
+        }
+        $build_summary = "[$build_name]($build_url) | $icon | [$msg]($details_url)";
+        return $build_summary;
+    }
+
+    /**
      * Record what changed between two commits.
      **/
-    public function compareCommits(BuildUpdate $update, Project $project)
+    public function compareCommits(BuildUpdate $update)
     {
         // Get current revision (head).
         if (empty($update->Revision)) {
@@ -184,10 +471,9 @@ class GitHub implements RepositoryInterface
         $base = $previous_update->Revision;
 
         // Record the previous revision in the buildupdate table.
-        $db = Database::getInstance();
-        $stmt = $db->prepare(
+        $stmt = $this->db->prepare(
                 'UPDATE buildupdate SET priorrevision = ? WHERE id = ?');
-        $db->execute($stmt, [$base, $update->UpdateId]);
+        $this->db->execute($stmt, [$base, $update->UpdateId]);
 
         // Attempt to authenticate with the GitHub API.
         // We do not check the return value of authenticate() here because
@@ -198,21 +484,20 @@ class GitHub implements RepositoryInterface
 
         // Connect to memcache.
         require_once 'include/memcache_functions.php';
-        $config = Config::getInstance();
-        $memcache_enabled = $config->get('CDASH_MEMECACHE_ENABLED');
-        $memcache_prefix = $config->get('CDASH_MEMCACHE_PREFIX');
+        $memcache_enabled = $this->config->get('CDASH_MEMECACHE_ENABLED');
+        $memcache_prefix = $this->config->get('CDASH_MEMCACHE_PREFIX');
         if ($memcache_enabled) {
-            list($server, $port) = $config->get('CDASH_MEMCACHE_SERVER');
+            list($server, $port) = $this->config->get('CDASH_MEMCACHE_SERVER');
             $memcache = cdash_memcache_connect($server, $port);
             // Disable memcache for this request if it fails to connect.
             if ($memcache === false) {
-                $config->set('CDASH_MEMCACHE_ENABLED', false);
+                $this->config->set('CDASH_MEMCACHE_ENABLED', false);
             }
         }
 
         // Check if we've memcached the difference between these two revisions.
         $commits = null;
-        $diff_key = "$memcache_prefix:$project->Name:$base:$head";
+        $diff_key = "$memcache_prefix:{$this->project->Name}:$base:$head";
         if ($memcache_enabled) {
             $cached_response = cdash_memcache_get($memcache, $diff_key);
             if ($cached_response !== false) {
@@ -278,10 +563,10 @@ class GitHub implements RepositoryInterface
 
                 if (is_null($commit)) {
                     // Next, check the database.
-                    $stmt = $db->prepare(
+                    $stmt = $this->db->prepare(
                             'SELECT DISTINCT revision FROM updatefile
                             WHERE filename = ?');
-                    $db->execute($stmt, [$modified_file['filename']]);
+                    $this->db->execute($stmt, [$modified_file['filename']]);
                     while ($row = $stmt->fetch()) {
                         foreach ($list_of_commits as $c) {
                             if ($row['revision'] == $c['sha']) {
@@ -309,7 +594,7 @@ class GitHub implements RepositoryInterface
                         }
 
                         $commit_array = null;
-                        $commit_key = "$memcache_prefix:$project->Name:$sha";
+                        $commit_key = "$memcache_prefix:{$this->project->Name}:$sha";
                         if ($memcache_enabled) {
                             // Check memcache if it is enabled before hitting
                             // the GitHub API.
@@ -406,5 +691,17 @@ class GitHub implements RepositoryInterface
     public function getRepository()
     {
         return $this->repo;
+    }
+
+    protected function getRepositoryInformation()
+    {
+        $url = str_replace('//', '', $this->project->CvsUrl);
+        $parts = explode('/', $url);
+        if (isset($parts[1])) {
+            $this->owner = $parts[1];
+        }
+        if (isset($parts[2])) {
+            $this->repo = $parts[2];
+        }
     }
 }

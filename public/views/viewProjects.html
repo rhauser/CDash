@@ -26,7 +26,7 @@
       <div id="headerbottom">
         <div id="headerlogo">
           <a ng-href="{{cdash.home}}">
-            <img id="projectlogo" border="0" height="50px" src="img/cdash.png" />
+            <img id="projectlogo" border="0" height="50px" src="img/cdash.png?rev=2019-05-08" />
           </a>
         </div>
         <div id="headername2">
@@ -87,11 +87,11 @@
       </tr>
       <tr>
         <td height="1" colspan="14" align="right">
-          <div id="showold">
-            <a ng-show="cdash.allprojects == 0" href="viewProjects.php?allprojects=1">
+          <div ng-if="showoldtoggle" id="showold">
+            <a ng-show="!cdash.allprojects" href="viewProjects.php?allprojects=1">
               Show all {{cdash.nprojects}} projects
             </a>
-            <a ng-show="cdash.allprojects == 1" href="viewProjects.php">
+            <a ng-show="cdash.allprojects" href="viewProjects.php">
               Hide old projects
             </a>
           </div>

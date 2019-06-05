@@ -18,9 +18,16 @@ namespace CDash\Model;
 require_once  'include/common.php';
 require_once 'include/cdashmail.php';
 
+use CDash\Collection\SubscriberCollection;
+
 use CDash\Config;
 use CDash\Database;
+use CDash\Messaging\Notification\NotifyOn;
+use CDash\Messaging\Preferences\BitmaskNotificationPreferences;
+use CDash\Messaging\Preferences\NotificationPreferences;
+use CDash\Messaging\Preferences\NotificationPreferencesInterface;
 use CDash\ServiceContainer;
+use CDash\Model\Subscriber;
 
 /** Main project class */
 class Project
@@ -74,6 +81,11 @@ class Project
     /** @var \PDO $PDO */
     private $PDO;
 
+    /**
+     * @var SubscriberCollection
+     */
+    private $SubscriberCollection;
+
     public function __construct()
     {
         $this->Initialize();
@@ -126,6 +138,12 @@ class Project
         }
         if (empty($this->WebApiKey)) {
             $this->WebApiKey = '';
+        }
+        if (empty($this->EmailMaxItems)) {
+            $this->EmailMaxItems = 5;
+        }
+        if (empty($this->EmailMaxChars)) {
+            $this->EmailMaxChars = 255;
         }
         if (empty($this->WarningsFilter)) {
             $this->WarningsFilter = '';
@@ -1300,6 +1318,7 @@ class Project
         switch ($this->CvsViewerType) {
             case 'cgit':
             case 'github':
+            case 'gitlab':
             case 'gitorious':
             case 'gitweb':
             case 'redmine':
@@ -1679,6 +1698,98 @@ class Project
         return true;
     }
 
+    /**
+     * Returns the Project's SubscriberCollection object. This method lazily loads the
+     * SubscriberCollection if the object does not exist.
+     *
+     * @returns \CDash\Collection\SubscriberCollection
+     */
+    public function GetSubscriberCollection()
+    {
+        if (!$this->SubscriberCollection) {
+            $this->SubscriberCollection = $this->GetProjectSubscribers();
+        }
+
+        return $this->SubscriberCollection;
+    }
+
+    /**
+     * Sets the Project's SubscriberCollection property.
+     *
+     * @param SubscriberCollection $subscribers
+     */
+    public function SetSubscriberCollection(SubscriberCollection $subscribers)
+    {
+        $this->SubscriberCollection = $subscribers;
+    }
+
+    /**
+     * Returns a SubscriberCollection; a collection of all users and their subscription preferences.
+     *
+     * @return SubscriberCollection
+     * @throws \DI\DependencyException
+     * @throws \DI\NotFoundException
+     */
+    public function GetProjectSubscribers()
+    {
+        $service = ServiceContainer::getInstance()->getContainer();
+        $collection = $service->make(SubscriberCollection::class);
+        $userTable = qid('user');
+        // TODO: works, but maybe find a better query
+        $sql = "
+            SELECT
+               u2p.*,
+               u.email email,
+               labelid haslabels
+            FROM user2project u2p
+              JOIN $userTable u ON u.id = u2p.userid
+              LEFT JOIN labelemail ON labelemail.userid = u2p.userid
+            WHERE u2p.projectid = :id
+            ORDER BY u.email;
+        ";
+
+        $user = $this->PDO->prepare($sql);
+        $user->bindParam(':id', $this->Id, \PDO::PARAM_INT);
+        $user->execute();
+
+        foreach ($user->fetchAll(\PDO::FETCH_OBJ) as $row) {
+            /** @var NotificationPreferences $preferences */
+            $preferences = $service->make(
+                BitmaskNotificationPreferences::class,
+                ['mask' => $row->emailcategory]
+            );
+            $preferences->setPreferencesFromEmailTypeProperty($row->emailtype);
+            if ($preferences->get(NotifyOn::NEVER)) {
+                continue;
+            }
+            $preferences->set(NotifyOn::FIXED, $row->emailsuccess);
+            $preferences->set(NotifyOn::SITE_MISSING, $row->emailmissingsites);
+            $preferences->set(NotifyOn::REDUNDANT, $this->EmailRedundantFailures);
+            $preferences->set(NotifyOn::LABELED, (bool)$row->haslabels);
+
+            /** @var Subscriber $subscriber */
+            $subscriber = $service->make(Subscriber::class, ['preferences' => $preferences]);
+            $subscriber
+                ->setAddress($row->email)
+                ->setUserId($row->userid);
+
+            $collection->add($subscriber);
+        }
+
+        return $collection;
+    }
+
+    /**
+     * Returns a self referencing URI of the current Project.
+     *
+     * @return string
+     */
+    public function GetUrlForSelf()
+    {
+        $config = Config::getInstance();
+        return "{$config->getBaseUrl()}/viewProject?projectid={$this->Id}";
+    }
+
     // Modify the build error/warning filters for this project if necessary.
     public function UpdateBuildFilters()
     {
@@ -1689,5 +1800,62 @@ class Project
                     $this->WarningsFilter, $this->ErrorsFilter);
         }
         return true;
+    }
+
+    /**
+     * Return the beginning and the end of the specified testing day
+     * in DATETIME format.
+     */
+    public function ComputeTestingDayBounds($date)
+    {
+        list($unused, $beginning_timestamp) =
+            get_dates($date, $this->NightlyTime);
+
+        $datetime = new \DateTime();
+        $datetime->setTimeStamp($beginning_timestamp);
+        $datetime->add(new \DateInterval('P1D'));
+        $end_timestamp = $datetime->getTimestamp();
+
+        $beginningOfDay = gmdate(FMT_DATETIME, $beginning_timestamp);
+        $endOfDay = gmdate(FMT_DATETIME, $end_timestamp);
+        return [$beginningOfDay, $endOfDay];
+    }
+
+
+    /**
+     * Return the testing day (a string in DATETIME format)
+     * for a given date (a date/time string).
+     */
+    public function GetTestingDay($date)
+    {
+        // If the build was started after the nightly start time
+        // then it should appear on the dashboard results for the
+        // subsequent day.
+        $build_datetime = new \DateTime($date);
+        $build_start_timestamp = $build_datetime->getTimestamp();
+        $nightly_start_timestamp = strtotime($this->NightlyTime);
+
+        if (date(FMT_TIME, $nightly_start_timestamp) < '12:00:00') {
+            // If the "nightly" start time is in the morning then any build
+            // that occurs before it is part of the previous testing day.
+            if (date(FMT_TIME, $build_start_timestamp) <
+                    date(FMT_TIME, $nightly_start_timestamp)
+               ) {
+                $build_datetime->sub(new \DateInterval('P1D'));
+                $build_start_timestamp = $build_datetime->getTimestamp();
+            }
+        } else {
+            // If the nightly start time is NOT in the morning then any build
+            // that occurs after it is part of the next testing day.
+            if (date(FMT_TIME, $build_start_timestamp) >=
+                    date(FMT_TIME, $nightly_start_timestamp)
+               ) {
+                $build_datetime->add(new \DateInterval('P1D'));
+                $build_start_timestamp = $build_datetime->getTimestamp();
+            }
+        }
+
+        $build_date = date(FMT_DATE, $build_start_timestamp);
+        return $build_date;
     }
 }

@@ -17,6 +17,7 @@ namespace CDash\Controller\Api;
 
 use CDash\Config;
 use CDash\Database;
+use CDash\Model\Build;
 use CDash\Model\BuildGroup;
 use CDash\Model\Project;
 
@@ -251,7 +252,7 @@ class Index extends ResultsApi
     public function getIndexQuery($userupdatesql='')
     {
         return
-            "SELECT b.id,b.siteid,b.parentid,b.done,b.changeid,
+            "SELECT b.id,b.siteid,b.parentid,b.done,b.changeid,b.testduration,
             bu.status AS updatestatus,
             i.osname AS osname,
             bu.starttime AS updatestarttime,
@@ -265,7 +266,7 @@ class Index extends ResultsApi
             bw_diff.difference_positive AS countbuildwarningdiffp,
             bw_diff.difference_negative AS countbuildwarningdiffn,
             ce_diff.difference AS countconfigurewarningdiff,
-            btt.time AS testduration,
+            btt.time AS testtime,
             tnotrun_diff.difference_positive AS counttestsnotrundiffp,
             tnotrun_diff.difference_negative AS counttestsnotrundiffn,
             tfailed_diff.difference_positive AS counttestsfaileddiffp,
@@ -430,8 +431,7 @@ class Index extends ResultsApi
         }
 
         if (empty($build_row['testduration'])) {
-            $time_array = pdo_fetch_array(pdo_query("SELECT SUM(time) FROM build2test WHERE buildid='$buildid'"));
-            $build_row['testduration'] = round($time_array[0], 1);
+            $build_row['testduration'] = 0;
         } else {
             $build_row['testduration'] = round($build_row['testduration'], 1);
         }
@@ -519,7 +519,8 @@ class Index extends ResultsApi
         $selected_tests_not_run = 0;
         $selected_tests_failed = 0;
         $selected_tests_passed = 0;
-        $selected_test_duration = 0;
+        $selected_proc_time = 0;
+        $one_at_a_time = false;
 
         if ($numchildren > 0) {
             $child_builds_hyperlink =
@@ -527,17 +528,25 @@ class Index extends ResultsApi
             $build_response['multiplebuildshyperlink'] = $child_builds_hyperlink;
             $this->buildgroupsResponse[$i]['hasparentbuilds'] = true;
 
+            // Determine if this was an "all at once" or a "one at a time"
+            // SubProject build.
+            $stmt = $this->db->prepare(
+                'SELECT COUNT(DISTINCT starttime) FROM build
+                 WHERE parentid = :parentid');
+            $this->db->execute($stmt, [':parentid' => $buildid]);
+            $one_at_a_time = $stmt->fetchColumn() > 1;
+
             // Compute selected (excluded or included) SubProject results.
             if ($this->selectedSubProjects) {
                 $select_query = "
                     SELECT configureerrors, configurewarnings, configureduration,
                            builderrors, buildwarnings, buildduration,
                            b.starttime, b.endtime, testnotrun, testfailed, testpassed,
-                           btt.time AS testduration, sb.name
+                           testduration, sb.name, btt.time AS testtime
                                FROM build AS b
                                INNER JOIN subproject2build AS sb2b ON (b.id = sb2b.buildid)
                                INNER JOIN subproject AS sb ON (sb2b.subprojectid = sb.id)
-                               LEFT JOIN buildtesttime AS btt ON (b.id=btt.buildid)
+                               LEFT JOIN buildtesttime AS btt ON (btt.buildid = b.id)
                                WHERE b.parentid=$buildid
                                AND sb.name IN $this->selectedSubProjects";
                 $select_results = pdo_query($select_query);
@@ -560,8 +569,8 @@ class Index extends ResultsApi
                         max(0, $select_array['testfailed']);
                     $selected_tests_passed +=
                         max(0, $select_array['testpassed']);
-                    $selected_test_duration +=
-                        max(0, $select_array['testduration']);
+                    $selected_proc_time +=
+                        max(0, $select_array['testtime']);
                 }
             }
         } else {
@@ -648,7 +657,7 @@ class Index extends ResultsApi
             INNER JOIN build AS b ON (l2b.buildid=b.id)
             WHERE b.id=' . qnum($buildid);
 
-        $build_labels = array();
+        $build_labels = [];
         if ($this->numSelectedSubProjects > 0) {
             // Special handling for whitelisting/blacklisting SubProjects.
             if ($this->includeSubProjects) {
@@ -726,7 +735,7 @@ class Index extends ResultsApi
         $build_response['time'] = time_difference($duration, true);
         $build_response['timefull'] = $duration;
 
-        $update_response = array();
+        $update_response = [];
 
         $countupdatefiles = $build_array['countupdatefiles'];
         $this->buildgroupsResponse[$i]['numupdatedfiles'] += $countupdatefiles;
@@ -774,21 +783,31 @@ class Index extends ResultsApi
             $build_response['update'] = $update_response;
         }
 
-        $compilation_response = array();
+        $compilation_response = [];
 
         if ($build_array['countbuilderrors'] >= 0) {
-            if ($this->includeSubProjects) {
-                $nerrors = $selected_build_errors;
-                $nwarnings = $selected_build_warnings;
-                $buildduration = $selected_build_duration;
-            } else {
-                $nerrors =
-                    $build_array['countbuilderrors'] - $selected_build_errors;
-                $nwarnings = $build_array['countbuildwarnings'] -
-                    $selected_build_warnings;
-                $buildduration = $build_array['buildduration'] -
-                    $selected_build_duration;
+            $nerrors = $build_array['countbuilderrors'];
+            $nwarnings = $build_array['countbuildwarnings'];
+            $buildduration = $build_array['buildduration'];
+
+            // The SubProjects filters only modify values for parent builds
+            // (not children).
+            if ($this->childView == 0) {
+                if ($this->includeSubProjects) {
+                    $nerrors = $selected_build_errors;
+                    $nwarnings = $selected_build_warnings;
+                    $buildduration = $selected_build_duration;
+                } else {
+                    $nerrors -= $selected_build_errors;
+                    $nwarnings -= $selected_build_warnings;
+                    // We only subtract from the build duration for "one at a time"
+                    // builds (not "all at once" builds).
+                    if ($one_at_a_time) {
+                        $buildduration -= $selected_build_duration;
+                    }
+                }
             }
+
             $compilation_response['error'] = $nerrors;
             $this->buildgroupsResponse[$i]['numbuilderror'] += $nerrors;
 
@@ -820,20 +839,27 @@ class Index extends ResultsApi
         $build_response['hasconfigure'] = false;
         if ($build_array['hasconfigure'] != 0) {
             $build_response['hasconfigure'] = true;
-            $configure_response = array();
+            $configure_response = [];
 
-            if ($this->includeSubProjects) {
-                $nconfigureerrors = $selected_configure_errors;
-                $nconfigurewarnings = $selected_configure_warnings;
-                $configureduration = $selected_configure_duration;
-            } else {
-                $nconfigureerrors = $build_array['countconfigureerrors'] -
-                    $selected_configure_errors;
-                $nconfigurewarnings = $build_array['countconfigurewarnings'] -
-                    $selected_configure_warnings;
-                $configureduration = $build_array['configureduration'] -
-                    $selected_configure_duration;
+            $nconfigureerrors = $build_array['countconfigureerrors'];
+            $nconfigurewarnings = $build_array['countconfigurewarnings'];
+            $configureduration = $build_array['configureduration'];
+
+            // The SubProjects filters only modify configure values when we're
+            // viewing parent builds that performed their SubProjects one at a time
+            // (not all at once).
+            if ($this->childView == 0 && $one_at_a_time) {
+                if ($this->includeSubProjects) {
+                    $nconfigureerrors = $selected_configure_errors;
+                    $nconfigurewarnings = $selected_configure_warnings;
+                    $configureduration = $selected_configure_duration;
+                } else {
+                    $nconfigureerrors -= $selected_configure_errors;
+                    $nconfigurewarnings -= $selected_configure_warnings;
+                    $configureduration -= $selected_configure_duration;
+                }
             }
+
             $configure_response['error'] = $nconfigureerrors;
             $this->buildgroupsResponse[$i]['numconfigureerror'] += $nconfigureerrors;
 
@@ -858,22 +884,27 @@ class Index extends ResultsApi
         if ($build_array['hastest'] != 0) {
             $build_response['hastest'] = true;
             $this->buildgroupsResponse[$i]['hastestdata'] = true;
-            $test_response = array();
+            $test_response = [];
 
-            if ($this->includeSubProjects) {
-                $nnotrun = $selected_tests_not_run;
-                $nfail = $selected_tests_failed;
-                $npass = $selected_tests_passed;
-                $testduration = $selected_test_duration;
-            } else {
-                $nnotrun = $build_array['counttestsnotrun'] -
-                    $selected_tests_not_run;
-                $nfail = $build_array['counttestsfailed'] -
-                    $selected_tests_failed;
-                $npass = $build_array['counttestspassed'] -
-                    $selected_tests_passed;
-                $testduration = $build_array['testduration'] -
-                    $selected_test_duration;
+            $nnotrun = $build_array['counttestsnotrun'];
+            $nfail = $build_array['counttestsfailed'];
+            $npass = $build_array['counttestspassed'];
+            $proc_time = $build_array['testtime'];
+
+            // The SubProjects filters only modify values for parent builds
+            // (not children).
+            if ($this->childView == 0) {
+                if ($this->includeSubProjects) {
+                    $nnotrun = $selected_tests_not_run;
+                    $nfail = $selected_tests_failed;
+                    $npass = $selected_tests_passed;
+                    $proc_time = $selected_proc_time;
+                } else {
+                    $nnotrun -= $selected_tests_not_run;
+                    $nfail -= $selected_tests_failed;
+                    $npass -= $selected_tests_passed;
+                    $proc_time -= $selected_proc_time;
+                }
             }
 
             if ($this->childView == 1 || (!$this->includeSubProjects && !$this->excludeSubProjects)) {
@@ -953,9 +984,13 @@ class Index extends ResultsApi
             $this->buildgroupsResponse[$i]['numtestfail'] += $nfail;
             $this->buildgroupsResponse[$i]['numtestpass'] += $npass;
 
+            $testduration = $build_array['testduration'];
             $test_response['time'] = time_difference($testduration, true);
             $test_response['timefull'] = $testduration;
             $this->buildgroupsResponse[$i]['testduration'] += $testduration;
+
+            $test_response['procTime'] = time_difference($proc_time, true);
+            $test_response['procTimeFull'] = $proc_time;
 
             $build_response['test'] = $test_response;
         }
@@ -1134,7 +1169,7 @@ class Index extends ResultsApi
         }
 
         $currentUTCTime = gmdate(FMT_DATETIME, $currentstarttime + 3600 * 24);
-        $response = array();
+        $response = [];
         $build2grouprule = pdo_query(
             "SELECT g.siteid, g.buildname, g.buildtype, s.name, s.outoforder
             FROM build2grouprule AS g, site AS s
@@ -1151,7 +1186,7 @@ class Index extends ResultsApi
                 $siteoutoforder = $build2grouprule_array['outoforder'];
                 $buildtype = $build2grouprule_array['buildtype'];
                 $buildname = $build2grouprule_array['buildname'];
-                $build_response = array();
+                $build_response = [];
                 $build_response['site'] = $site;
                 $build_response['siteoutoforder'] = $siteoutoforder;
                 $build_response['siteid'] = $siteid;
@@ -1271,6 +1306,83 @@ class Index extends ResultsApi
             for ($j = 0; $j < count($this->buildgroupsResponse[$i]['builds']); $j++) {
                 $idx = array_search($this->buildgroupsResponse[$i]['builds'][$j]['position'], $this->subProjectPositions);
                 $this->buildgroupsResponse[$i]['builds'][$j]['position'] = $idx + 1;
+            }
+        }
+    }
+
+    // Record next & previous dates (if any).
+    public function determineNextPrevious(&$response, $base_url)
+    {
+        // Next & previous are handled separately when we're viewing the
+        // results of a single parent build.
+        if ($this->childView) {
+            return;
+        }
+
+        // Use the project model to get the bounds of the current testing day.
+        list($beginningOfDay, $endOfDay) =
+            $this->project->ComputeTestingDayBounds($this->date);
+
+        // Query the database to find the previous testing day
+        // that has build results.
+        $query_params = [
+            ':projectid' => $this->project->Id,
+            ':time'      => $beginningOfDay
+        ];
+
+        // Only search for builds from a certain group when buildGroupName is set.
+        $extra_join = '';
+        $extra_where = '';
+        if ($this->buildGroupName) {
+            $query_params[':groupname'] = $this->buildGroupName;
+            $extra_join = '
+                JOIN build2group b2g ON b2g.buildid = b.id
+                JOIN buildgroup bg ON bg.id = b2g.groupid';
+            $extra_where = 'AND bg.name = :groupname';
+        }
+
+        $sql = "SELECT b.starttime FROM build b
+                $extra_join
+                WHERE b.projectid = :projectid
+                AND b.starttime < :time
+                $extra_where
+                ORDER BY starttime DESC LIMIT 1";
+        $previous_stmt = $this->db->prepare($sql);
+        $this->db->execute($previous_stmt, $query_params);
+        $starttime = $previous_stmt->fetchColumn();
+        if ($starttime) {
+            $previous_date = $this->project->GetTestingDay($starttime);
+            $response['menu']['previous'] = "$base_url&date=$previous_date";
+        } else {
+            $response['menu']['previous'] = false;
+        }
+
+        // Find the next testing day that has build results.
+        $sql = "SELECT b.starttime FROM build b
+                $extra_join
+                WHERE b.projectid = :projectid
+                AND b.starttime >= :time
+                $extra_where
+                ORDER BY starttime LIMIT 1";
+        $next_stmt = $this->db->prepare($sql);
+        $query_params[':time'] = $endOfDay;
+        $this->db->execute($next_stmt, $query_params);
+        $starttime = $next_stmt->fetchColumn();
+        if ($starttime) {
+            $next_date = $this->project->GetTestingDay($starttime);
+            $response['menu']['next'] = "$base_url&date=$next_date";
+        } else {
+            $response['menu']['next'] = false;
+        }
+
+        // Add an extra URL argument to menu navigation items when subprojectid is set.
+        if ($this->subProjectId) {
+            $subproject_name = $response['subprojectname'];
+            $extraurl = '&subproject=' . urlencode($subproject_name);
+            foreach (['previous', 'next', 'current'] as $item) {
+                if ($response['menu'][$item]) {
+                    $response['menu'][$item] .= $extraurl;
+                }
             }
         }
     }

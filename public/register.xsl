@@ -36,7 +36,7 @@
         <xsl:choose>
           <xsl:when test="cdash/user/id>0">My CDash</xsl:when>
           <xsl:otherwise>Login</xsl:otherwise>
-        </xsl:choose></a><a href="index.php">All Dashboards</a>
+        </xsl:choose></a><a href="viewProjects.php">All Dashboards</a>
      <xsl:if test="cdash/user/id>0">
        <a href="user.php?logout=1">Log Out</a>
      </xsl:if>
@@ -55,7 +55,7 @@
           <xsl:attribute name="src">displayImage.php?imgid=<xsl:value-of select="cdash/dashboard/logoid"/></xsl:attribute>
          </xsl:when>
         <xsl:otherwise>
-         <xsl:attribute name="src">img/cdash.png</xsl:attribute>
+         <xsl:attribute name="src">img/cdash.png?rev=2019-05-08</xsl:attribute>
         </xsl:otherwise>
         </xsl:choose>
         </img>
