@@ -5,16 +5,16 @@
     <meta charset="UTF-8">
     <meta name="robots" content="noindex,nofollow" />
     <link rel="shortcut icon" href="favicon.ico" />
-    <link rel="stylesheet" type="text/css" ng-href="build/css/{{cssfile}}_1559763741186.css" />
+    <link rel="stylesheet" type="text/css" ng-href="build/css/{{cssfile}}_1560348166818.css" />
     <link rel="stylesheet" href="css/bootstrap.min.css"/>
-    <script src="js/CDash_1559763741186.min.js"></script>
+    <script src="js/CDash_1560348166818.min.js"></script>
     <title>{{cdash.title || "CDash : View notes"}}</title>
   </head>
 
   <body bgcolor="#ffffff" ng-controller="ViewNotesController">
     <div ng-if="cdash.requirelogin == 1" ng-include="'login.php'"></div>
 
-    <ng-include ng-if="cdash.requirelogin != 1" src="cdash.header || 'build/views/partials/header_1559763741186.html'"></ng-include>
+    <ng-include ng-if="cdash.requirelogin != 1" src="cdash.header || 'build/views/partials/header_1560348166818.html'"></ng-include>
 
     <div id="main_content" ng-if="cdash.requirelogin != 1 && !cdash.error">
       <br/>
@@ -65,6 +65,6 @@
     </div>
 
     <!-- FOOTER -->
-    <ng-include ng-if="cdash.requirelogin != 1" src="cdash.footer || 'build/views/partials/footer_1559763741186.html'"></ng-include>
+    <ng-include ng-if="cdash.requirelogin != 1" src="cdash.footer || 'build/views/partials/footer_1560348166818.html'"></ng-include>
   </body>
 </html>
