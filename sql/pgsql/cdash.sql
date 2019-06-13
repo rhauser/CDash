@@ -33,15 +33,13 @@ CREATE TABLE "build" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uuid" UNIQUE ("uuid")
 );
-CREATE INDEX "projectid" on "build" ("projectid");
-CREATE INDEX "starttime" on "build" ("starttime");
 CREATE INDEX "submittime" on "build" ("submittime");
 CREATE INDEX "siteid" on "build" ("siteid");
 CREATE INDEX "stamp" on "build" ("stamp");
 CREATE INDEX "type" on "build" ("type");
 CREATE INDEX "name" on "build" ("name");
 CREATE INDEX "parentid" on "build" ("parentid");
-CREATE INDEX "projectid_parentid_starttime" ON "build" (projectid,parentid,starttime);
+CREATE INDEX "projectid_starttime_parentid" ON "build" (projectid,starttime,parentid);
 
 --
 -- Table: buildgroup

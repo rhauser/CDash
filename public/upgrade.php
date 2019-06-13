@@ -844,6 +844,13 @@ if (isset($_GET['upgrade-2-8'])) {
         ModifyTableField('build', 'configureduration', 'int(11)', 'integer', '0', true, false);
     }
 
+    // Use a single, properly ordered composite key on the build table
+    // rather than three different keys.
+    AddTableIndex('build', ['projectid', 'starttime', 'parentid']);
+    RemoveTableIndex('build', 'projectid_parentid_starttime');
+    RemoveTableIndex('build', 'projectid');
+    RemoveTableIndex('build', 'starttime');
+
     // Set the database version
     setVersion();
 

@@ -45,15 +45,13 @@ CREATE TABLE `build` (
   `uuid` varchar(36) NOT NULL,
   `changeid` varchar(40) DEFAULT '',
   PRIMARY KEY  (`id`),
-  KEY `projectid` (`projectid`),
-  KEY `starttime` (`starttime`),
   KEY `submittime` (`submittime`),
   KEY `siteid` (`siteid`),
   KEY `stamp` (`stamp`),
   KEY `type` (`type`),
   KEY `name` (`name`),
   KEY `parentid` (`parentid`),
-  KEY `projectid_parentid_starttime` (`projectid`,`parentid`,`starttime`),
+  KEY `projectid_starttime_parentid` (`projectid`,`starttime`,`parentid`),
   UNIQUE KEY uuid (uuid)
 );
 
