@@ -22,8 +22,9 @@ CDash.controller('QueryTestsController',
     // Check for filters
     $rootScope.queryString['filterstring'] = filters.getString();
 
+    // By default, sort by test status then test name.
+    var sort_order = ['status', 'testname'];
     // Check for sort order cookie.
-    var sort_order = [];
     var sort_cookie_value = $.cookie('cdash_query_tests_sort');
     if(sort_cookie_value) {
       sort_order = sort_cookie_value.split(",");

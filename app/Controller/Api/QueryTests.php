@@ -196,7 +196,6 @@ class QueryTests extends ResultsApi
                 $filter_joins
                 WHERE b.projectid = :projectid
                 $parent_clause $date_clause $filter_sql
-                ORDER BY build2test.status, test.name
                 $limit_sql";
         $query_params[':projectid'] = $this->project->Id;
         $stmt = $pdo->prepare($sql);
