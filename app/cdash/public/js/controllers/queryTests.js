@@ -32,6 +32,9 @@ CDash.controller('QueryTestsController',
 
     apiLoader.loadPageData($scope, 'api/v1/queryTests.php');
     $scope.finishSetup = function() {
+      // Hide test output context by default.
+      $scope.cdash.showmatchingoutput = false;
+
       // Check for label filters
       $scope.cdash.extrafilterurl = filters.getLabelString($scope.cdash.filterdata);
       $scope.cdash.builds = $filter('orderBy')($scope.cdash.builds, $scope.orderByFields);
@@ -71,5 +74,9 @@ CDash.controller('QueryTestsController',
       uri += '&begin=' + $scope.cdash.begin + '&end=' + $scope.cdash.end;
       uri += filters.getString();
       window.location = uri;
+    };
+
+    $scope.toggleShowMatchingOutput = function() {
+      $scope.cdash.showmatchingoutput = !($scope.cdash.showmatchingoutput);
     };
 });
