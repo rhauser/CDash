@@ -1,8 +1,8 @@
-set(CTEST_SITE "CircleCI 2.0")
+set(CTEST_SITE "${SITENAME}")
 set(CTEST_BUILD_NAME "${BUILDNAME}")
 set(CTEST_CMAKE_GENERATOR "Unix Makefiles")
 set(CTEST_SOURCE_DIRECTORY "/home/kitware/cdash")
-set(CTEST_BINARY_DIRECTORY "/home/kitware/cdash/_build")
+set(CTEST_BINARY_DIRECTORY "/home/kitware/_build")
 set(CTEST_UPDATE_COMMAND git)
 set(CTEST_UPDATE_VERSION_ONLY 1)
 
@@ -17,7 +17,11 @@ if (postgres)
     "-DCDASH_DB_HOST=postgres"
     "-DCDASH_DB_PASS=cdash4simpletest")
 else()
-  list(APPEND cfg_options "-DCDASH_DB_LOGIN=root")
+  list(APPEND cfg_options
+  "-DCDASH_DB_TYPE=mysql"
+  "-DCDASH_DB_LOGIN=root"
+  "-DCDASH_DB_HOST=mysql"
+  "-DCDASH_DB_PASS=")
 endif()
 
 ctest_start(Continuous)
