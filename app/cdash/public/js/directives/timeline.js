@@ -1,5 +1,5 @@
 var timelineController =
-  function TimelineChartController($http, $scope) {
+  function TimelineChartController($http, $scope, filters) {
     $scope.loading = true;
 
     query_parameters = {
@@ -253,6 +253,7 @@ var timelineController =
         uri += '&begin=' + $scope.cdash.begin_date + '&end=' + $scope.cdash.end_date;
       }
 
+      uri += filters.getString();
       window.location = uri;
     };
 };
