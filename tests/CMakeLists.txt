@@ -9,16 +9,6 @@ function(add_vue_test TestName)
     )
 endfunction(add_vue_test)
 
-function(add_dusk_test TestName)
-    add_test(
-        NAME ${TestName}
-        COMMAND ${PHP_EXE} "artisan" "dusk" "tests/Browser/${TestName}Test.php"
-        WORKING_DIRECTORY "${CDash_SOURCE_DIR}"
-    )
-endfunction(add_dusk_test)
-
-add_dusk_test(BuildPageHeader)
-
 add_vue_test(page-header)
 add_vue_test(page-header/header-top)
 add_vue_test(page-header/header-bottom)
