@@ -292,6 +292,7 @@ function ctest_parse($filehandler, $projectid, $buildid = null,
     }
 
     $content = fread($filehandler, 8192);
+    $content .= fread($filehandler, 8192);
     $handler = null;
     $parser = xml_parser_create();
     $file = '';
@@ -447,7 +448,8 @@ function ctest_parse($filehandler, $projectid, $buildid = null,
         return $handler;
     }
 
-    //burn the first 8192 since we have already parsed it
+    //burn the first 16k bytes since we have already parsed it
+    $content = fread($parseHandle, 8192);
     $content = fread($parseHandle, 8192);
     while (!feof($parseHandle)) {
         $content = fread($parseHandle, 8192);
